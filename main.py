@@ -1,12 +1,23 @@
-import h5py
-import numpy as np
+
 from scipy.ndimage import generic_filter
 from scipy.ndimage import median_filter
 from scipy.signal import convolve2d
-import time
 from numba import jit, njit
-import matplotlib.pyplot as plt
+from types import SimpleNamespace
+
+import time
+import h5py
+import numpy as np
 import os
+import xarray
+import rioxarray  # se debe importar para usar rio desde datasets de xarray
+import rasterio
+import matplotlib
+import matplotlib.pyplot as plt
+
+
+# apt install python3-tk
+matplotlib.use('TkAgg')
 
 
 # OBS:
@@ -159,9 +170,59 @@ if __name__ == '__main__':
     print(f"tiempo: {end - start} -- media: {np.nanmean(array_am_4)} -- convolve2d")
     plot_array_am(array_am_4, "convolve2d") if graficar else None
 
+    #
+    # Aplicar suavizado con xarray.rolling
+    #
+
+    # Definir EXTENT.
+    EXTENT = SimpleNamespace()
+    setattr(EXTENT, 'xmin', -180.0)
+    setattr(EXTENT, 'xmax', 180.0)
+    setattr(EXTENT, 'ymin', -85.044)
+    setattr(EXTENT, 'ymax', 85.044)
+    # OBS:
+    #  - Los valores de los elementos del EXTENT se obtuvieron aquí:
+    #    https://nsidc.org/data/spl3smap/versions/3
+
+    # Ancho y alto de la ventana móvil
+    ROLLING_WINDOW_SMOOTHING = 5
+
+    # Convertir datos en archivos hdf5, a datasets xarray
+    start = time.time()
+    # definir transform
+    transform = rasterio.transform.from_bounds(
+        west=EXTENT.xmin, south=EXTENT.ymin, east=EXTENT.xmax, north=EXTENT.ymax,
+        width=len(soil_moisture[0]), height=len(soil_moisture))
+    # definir coordenadas de los valores extraídos del hdf5
+    res_x = (abs(EXTENT.xmin) + abs(EXTENT.xmax))/len(soil_moisture[0])  # 0.09336099585062241
+    xrange = np.arange(EXTENT.xmin, EXTENT.xmax, res_x if EXTENT.xmin < EXTENT.xmax else res_x * -1)
+    res_y = (abs(EXTENT.ymin) + abs(EXTENT.ymax))/len(soil_moisture)
+    yrange = np.arange(EXTENT.ymax, EXTENT.ymin, res_y if EXTENT.ymax < EXTENT.ymin else res_y * -1)
+    coords = dict(latitude=yrange, longitude=xrange)
+    # crear objeto xarray
+    raster = xarray.DataArray(data=soil_moisture, coords=coords)\
+        .astype('float32')\
+        .rio.write_transform(transform)\
+        .rio.write_crs('epsg:4326')
+    end = time.time()
+    print(f"tiempo: {end - start} -- media: {np.nanmean(raster.values)} -- Conversión a XARRAY")
+
+    # Calcular media y graficar
+    print(f"media: {np.nanmean(raster.values)}")
+    plot_array_am(raster.values, "Datos Originales en XARRAY") if graficar else None
+
+    # Aplicar suavizado (similar a raster::focal)
+    start = time.time()
+    array_am_5 = raster.rolling(latitude=ROLLING_WINDOW_SMOOTHING,
+                                longitude=ROLLING_WINDOW_SMOOTHING,
+                                min_periods=7, center=True).mean()
+    end = time.time()
+    print(f"tiempo: {end - start} -- media: {np.nanmean(array_am_5.values)} -- xarray.rolling")
+    plot_array_am(array_am_5.values, "xarray.rolling") if graficar else None
+
     parar = True
 
-# Estos son celdas de ejemplo en las que se puede ver qel problema con fastmath
+# Celdas en las que se puede observar el problema con fastmath
 #
 # i, j = 838, 1228
 # start_i = max(i - size // 2, 0)
